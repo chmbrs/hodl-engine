@@ -1,0 +1,22 @@
+[project]
+name = "hodl-engine"
+version = "0.1.0"
+description = "Binance portfolio cost basis tracking, rebalancing suggestions, and AI-powered financial advisor"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "binance-connector",
+    "fastapi",
+    "hypercorn",
+    "jinja2",
+    "pydantic",
+    "python-dotenv",
+    "python-multipart",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]

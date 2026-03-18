@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Portfolio - Hodl Engine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Portfolio Overview</h1>
+    <button id="sync-btn" class="btn btn-primary" onclick="syncPortfolio()">
+        <i class="fas fa-sync"></i> Sync from Binance
+    </button>
+</div>
+
+<div class="summary-cards">
+    <div class="card">
+        <span class="card-label">Total Value</span>
+        <span class="card-value">${{ "%.2f"|format(dashboard.total_value) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Total Cost</span>
+        <span class="card-value">${{ "%.2f"|format(dashboard.total_cost) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Total P&L</span>
+        <span class="card-value {% if dashboard.total_pnl >= 0 %}positive{% else %}negative{% endif %}">
+            ${{ "%.2f"|format(dashboard.total_pnl) }}
+            ({{ "%.2f"|format(dashboard.total_pnl_pct) }}%)
+        </span>
+    </div>
+</div>
+
+<table class="holdings-table">
+    <thead>
+        <tr>
+            <th>Asset</th>
+            <th>Holdings</th>
+            <th>Avg Entry</th>
+            <th>Current Price</th>
+            <th>Current Value</th>
+            <th>Total Cost</th>
+            <th>P&L</th>
+            <th>P&L %</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for holding in dashboard.holdings %}
+        <tr onclick="window.location='/portfolio/{{ holding.group_name }}'" class="clickable-row">
+            <td class="asset-name">
+                <strong>{{ holding.group_name }}</strong>
+                {% if holding.members|length > 1 %}
+                <span class="members-badge">{{ holding.members|join(", ") }}</span>
+                {% endif %}
+            </td>
+            <td>{{ "%.6f"|format(holding.total_qty) }}</td>
+            <td>${{ "%.2f"|format(holding.avg_entry_price) }}</td>
+            <td>${{ "%.2f"|format(holding.current_price) }}</td>
+            <td>${{ "%.2f"|format(holding.current_value) }}</td>
+            <td>${{ "%.2f"|format(holding.total_cost) }}</td>
+            <td class="{% if holding.unrealized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                ${{ "%.2f"|format(holding.unrealized_pnl) }}
+            </td>
+            <td class="{% if holding.unrealized_pnl_pct >= 0 %}positive{% else %}negative{% endif %}">
+                {{ "%.2f"|format(holding.unrealized_pnl_pct) }}%
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not dashboard.holdings %}
+        <tr>
+            <td colspan="8" class="empty-state">
+                No holdings found. Click "Sync from Binance" to load your portfolio.
+            </td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+
+{% if dashboard.last_sync %}
+<p class="sync-info">Last synced: {{ dashboard.last_sync }}</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function syncPortfolio() {
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+    try {
+        const resp = await fetch('/api/portfolio/sync', { method: 'POST' });
+        const data = await resp.json();
+        window.location.reload();
+    } catch (err) {
+        alert('Sync failed: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-sync"></i> Sync from Binance';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Rebalance - Hodl Engine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Rebalance Suggestions</h1>
+</div>
+
+{% if dashboard.suggestions %}
+<h2>Allocation Suggestions</h2>
+<table class="holdings-table">
+    <thead>
+        <tr>
+            <th>Asset</th>
+            <th>Current %</th>
+            <th>Target %</th>
+            <th>Action</th>
+            <th>Qty</th>
+            <th>Value (USDT)</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for s in dashboard.suggestions %}
+        <tr>
+            <td><strong>{{ s.group_name }}</strong></td>
+            <td>{{ s.current_allocation_pct }}%</td>
+            <td>{{ s.target_allocation_pct }}%</td>
+            <td class="{% if s.action == 'BUY' %}positive{% elif s.action == 'SELL' %}negative{% endif %}">
+                {{ s.action }}
+            </td>
+            <td>{{ s.suggested_qty }}</td>
+            <td>${{ "%.2f"|format(s.suggested_value_usdt) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if dashboard.asset_views %}
+<h2>Stop-Loss & Take-Profit Levels</h2>
+{% for view in dashboard.asset_views %}
+{% if view.stop_losses or view.take_profits %}
+<div class="asset-levels">
+    <h3>{{ view.holding.group_name }} (Entry: ${{ "%.2f"|format(view.holding.avg_entry_price) }} | Current: ${{ "%.2f"|format(view.holding.current_price) }})</h3>
+    <div class="levels-grid">
+        <div class="levels-column">
+            <h4 class="negative">Stop-Loss Levels</h4>
+            {% for sl in view.stop_losses %}
+            <div class="level-row">
+                <span>{{ sl.label }}</span>
+                <span class="negative">${{ "%.2f"|format(sl.price) }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="levels-column">
+            <h4 class="positive">Take-Profit Levels</h4>
+            {% for tp in view.take_profits %}
+            <div class="level-row">
+                <span>{{ tp.label }}</span>
+                <span class="positive">${{ "%.2f"|format(tp.price) }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if not dashboard.suggestions and not dashboard.asset_views %}
+<div class="empty-state">
+    <p>No holdings data available. <a href="/portfolio">Sync your portfolio</a> first.</p>
+</div>
+{% endif %}
+{% endblock %}

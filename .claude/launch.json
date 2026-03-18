@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hodl-engine API",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "hypercorn", "main:app", "--reload", "--log-level", "debug"],
+      "port": 8000
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ group_name }} - Hodl Engine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="/portfolio" class="back-link"><i class="fas fa-arrow-left"></i> Back to Portfolio</a>
+    <h1>{{ group_name }} Detail</h1>
+</div>
+
+{% if detail.holding %}
+<div class="summary-cards">
+    <div class="card">
+        <span class="card-label">Total Holdings</span>
+        <span class="card-value">{{ "%.6f"|format(detail.holding.total_qty) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Avg Entry Price</span>
+        <span class="card-value">${{ "%.2f"|format(detail.holding.avg_entry_price) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Current Price</span>
+        <span class="card-value">${{ "%.2f"|format(detail.holding.current_price) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Unrealized P&L</span>
+        <span class="card-value {% if detail.holding.unrealized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+            ${{ "%.2f"|format(detail.holding.unrealized_pnl) }}
+            ({{ "%.2f"|format(detail.holding.unrealized_pnl_pct) }}%)
+        </span>
+    </div>
+</div>
+
+{% if detail.holding.balances %}
+<h2>Balance Breakdown</h2>
+<table class="holdings-table">
+    <thead>
+        <tr>
+            <th>Asset</th>
+            <th>Account</th>
+            <th>Free</th>
+            <th>Locked</th>
+            <th>Total</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for bal in detail.holding.balances %}
+        <tr>
+            <td>{{ bal.asset }}</td>
+            <td>{{ bal.account_type }}</td>
+            <td>{{ "%.8f"|format(bal.free) }}</td>
+            <td>{{ "%.8f"|format(bal.locked) }}</td>
+            <td>{{ "%.8f"|format(bal.total) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+<h2>Trade History</h2>
+<table class="holdings-table">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Total</th>
+            <th>Account</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for trade in detail.trades %}
+        <tr>
+            <td>{{ trade.trade_time }}</td>
+            <td>{{ trade.symbol }}</td>
+            <td class="{% if trade.side == 'BUY' %}positive{% else %}negative{% endif %}">{{ trade.side }}</td>
+            <td>${{ "%.2f"|format(trade.price) }}</td>
+            <td>{{ "%.6f"|format(trade.qty) }}</td>
+            <td>${{ "%.2f"|format(trade.quote_qty) }}</td>
+            <td>{{ trade.account_type }}</td>
+        </tr>
+        {% endfor %}
+        {% if not detail.trades %}
+        <tr>
+            <td colspan="7" class="empty-state">No trades found. Sync from Binance first.</td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}

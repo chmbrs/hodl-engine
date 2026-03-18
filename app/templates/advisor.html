@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}AI Advisor - Hodl Engine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>AI Financial Advisor</h1>
+</div>
+
+<div class="advisor-layout">
+    <div class="advisor-actions">
+        <h3>Quick Actions</h3>
+        <button class="btn btn-primary" onclick="runAnalysis('analyze')">
+            <i class="fas fa-chart-line"></i> Analyze Portfolio
+        </button>
+        <button class="btn btn-secondary" onclick="runAnalysis('sell-points')">
+            <i class="fas fa-arrow-trend-down"></i> Suggest Sell Points
+        </button>
+        <button class="btn btn-secondary" onclick="runAnalysis('coin-suggestions')">
+            <i class="fas fa-coins"></i> Find New Coins
+        </button>
+    </div>
+
+    <div class="chat-container">
+        <div id="chat-messages" class="chat-messages">
+            <div class="message assistant">
+                <p>Hello! I'm your AI portfolio advisor. I can analyze your holdings, suggest sell points, recommend new assets, and answer any questions about your portfolio. What would you like to know?</p>
+            </div>
+        </div>
+
+        <div class="chat-input-area">
+            <textarea id="chat-input" placeholder="Ask about your portfolio..." rows="2"
+                onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
+            <button class="btn btn-primary" onclick="sendMessage()">
+                <i class="fas fa-paper-plane"></i>
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const chatMessages = document.getElementById('chat-messages');
+const chatInput = document.getElementById('chat-input');
+
+function appendMessage(role, content) {
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    div.innerHTML = `<p>${content}</p>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    return div;
+}
+
+async function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+
+    appendMessage('user', text);
+    chatInput.value = '';
+
+    const assistantDiv = appendMessage('assistant', '<i class="fas fa-spinner fa-spin"></i> Thinking...');
+
+    try {
+        const resp = await fetch('/api/advisor/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text }),
+        });
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') break;
+                    fullText += data;
+                    assistantDiv.querySelector('p').textContent = fullText;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+        }
+
+        if (!fullText) {
+            assistantDiv.querySelector('p').textContent = 'No response received.';
+        }
+    } catch (err) {
+        assistantDiv.querySelector('p').textContent = 'Error: ' + err.message;
+    }
+}
+
+async function runAnalysis(type) {
+    let endpoint;
+    let label;
+
+    if (type === 'analyze') {
+        endpoint = '/api/advisor/analyze';
+        label = 'Portfolio Analysis';
+    } else if (type === 'sell-points') {
+        endpoint = '/api/advisor/sell-points/all';
+        label = 'Sell Point Suggestions';
+    } else if (type === 'coin-suggestions') {
+        endpoint = '/api/advisor/coin-suggestions';
+        label = 'New Coin Recommendations';
+    }
+
+    appendMessage('user', label);
+    const assistantDiv = appendMessage('assistant', '<i class="fas fa-spinner fa-spin"></i> Analyzing...');
+
+    try {
+        const resp = await fetch(endpoint, { method: 'POST' });
+        const data = await resp.json();
+        assistantDiv.querySelector('p').textContent = data.analysis || data.message || JSON.stringify(data);
+    } catch (err) {
+        assistantDiv.querySelector('p').textContent = 'Error: ' + err.message;
+    }
+}
+</script>
+{% endblock %}

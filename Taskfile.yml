@@ -1,0 +1,68 @@
+version: "3"
+
+vars:
+  APP_DIR: app
+
+tasks:
+  default:
+    desc: Run the CI pipeline
+    cmds:
+      - task: lock
+      - task: install-deps
+      - task: lint-check
+      - task: test
+
+  lock:
+    desc: Update uv.lock after changing pyproject.toml
+    dir: "{{.APP_DIR}}"
+    cmds:
+      - uv lock
+
+  install-deps:
+    desc: Install the project dependencies
+    run: once
+    dir: "{{.APP_DIR}}"
+    cmds:
+      - uv sync --locked --group dev
+
+  lint-check:
+    desc: Run linter checks
+    dir: "{{.APP_DIR}}"
+    deps:
+      - install-deps
+    cmds:
+      - |
+          OUTPUT=$(uv run ruff check . 2>&1) || STATUS=$?
+          STATUS=${STATUS:-0}
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "$OUTPUT"
+
+            if echo "$OUTPUT" | grep -q "fixable"; then
+              echo ""
+              echo "Some issues are auto-fixable. Run: task lint"
+            fi
+
+            exit 1
+          fi
+
+  lint:
+    desc: Auto-fix lint issues
+    dir: "{{.APP_DIR}}"
+    cmds:
+      - uv run ruff check . --fix --show-fixes
+
+  test:
+    desc: Run tests
+    deps:
+      - install-deps
+    cmds:
+      - uv run --project {{.APP_DIR}} pytest
+
+  run:
+    deps:
+      - install-deps
+    dir: "{{.APP_DIR}}"
+    desc: Run the application in development mode
+    cmds:
+      - uv run hypercorn main:app --reload --log-level debug

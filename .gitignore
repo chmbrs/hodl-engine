@@ -1,0 +1,11 @@
+.env
+local_db/
+logs/
+__pycache__/
+.venv/
+*.db
+*.pyc
+.ruff_cache/
+.pytest_cache/
+dist/
+*.egg-info/
