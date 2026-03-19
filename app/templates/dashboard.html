@@ -75,21 +75,113 @@
 {% if dashboard.last_sync %}
 <p class="sync-info">Last synced: {{ dashboard.last_sync }}</p>
 {% endif %}
+
+<div id="sync-progress" class="sync-progress hidden">
+    <div class="sync-steps">
+        <div class="sync-step" id="step-balances">
+            <span class="step-icon">○</span>
+            <span>Balances</span>
+        </div>
+        <div class="sync-step" id="step-prices">
+            <span class="step-icon">○</span>
+            <span>Prices</span>
+        </div>
+        <div class="sync-step" id="step-trades">
+            <span class="step-icon">○</span>
+            <span>Trades</span>
+        </div>
+        <div class="sync-step" id="step-converts">
+            <span class="step-icon">○</span>
+            <span>Converts</span>
+        </div>
+    </div>
+    <p id="sync-status-msg" class="sync-status-msg"></p>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+const STEPS = ['balances', 'prices', 'trades', 'converts'];
+
+function setStep(current) {
+    const idx = STEPS.indexOf(current);
+    STEPS.forEach((s, i) => {
+        const el = document.getElementById(`step-${s}`);
+        if (i < idx) {
+            el.querySelector('.step-icon').textContent = '✓';
+            el.classList.add('done');
+            el.classList.remove('active');
+        } else if (i === idx) {
+            el.querySelector('.step-icon').textContent = '⟳';
+            el.classList.add('active');
+            el.classList.remove('done');
+        } else {
+            el.querySelector('.step-icon').textContent = '○';
+            el.classList.remove('done', 'active');
+        }
+    });
+}
+
+function setAllDone() {
+    STEPS.forEach(s => {
+        const el = document.getElementById(`step-${s}`);
+        el.querySelector('.step-icon').textContent = '✓';
+        el.classList.add('done');
+        el.classList.remove('active');
+    });
+}
+
+let pollTimer = null;
+
+async function pollStatus() {
+    try {
+        const r = await fetch('/api/portfolio/sync/status');
+        const data = await r.json();
+
+        if (data.status === 'running') {
+            if (data.step) setStep(data.step);
+            document.getElementById('sync-status-msg').textContent = `Syncing ${data.step || ''}...`;
+        } else if (data.status === 'completed') {
+            clearInterval(pollTimer);
+            setAllDone();
+            const d = data.details || {};
+            document.getElementById('sync-status-msg').textContent =
+                `✓ Done — ${d.trades_synced ?? 0} trades, ${d.converts_synced ?? 0} converts, ${d.prices_synced ?? 0} prices`;
+            document.getElementById('sync-btn').disabled = false;
+            document.getElementById('sync-btn').innerHTML = '<i class="fas fa-sync"></i> Sync from Binance';
+            setTimeout(() => window.location.reload(), 2000);
+        } else if (data.status === 'failed') {
+            clearInterval(pollTimer);
+            document.getElementById('sync-status-msg').textContent = '✗ Sync failed: ' + (data.details?.error || 'unknown error');
+            document.getElementById('sync-status-msg').style.color = 'var(--negative)';
+            document.getElementById('sync-btn').disabled = false;
+            document.getElementById('sync-btn').innerHTML = '<i class="fas fa-sync"></i> Retry Sync';
+        }
+    } catch (e) {
+        console.error('Poll error', e);
+    }
+}
+
 async function syncPortfolio() {
     const btn = document.getElementById('sync-btn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+
+    document.getElementById('sync-progress').classList.remove('hidden');
+    document.getElementById('sync-status-msg').textContent = 'Starting sync...';
+    document.getElementById('sync-status-msg').style.color = '';
+    STEPS.forEach(s => {
+        const el = document.getElementById(`step-${s}`);
+        el.querySelector('.step-icon').textContent = '○';
+        el.classList.remove('done', 'active');
+    });
+
     try {
-        const resp = await fetch('/api/portfolio/sync', { method: 'POST' });
-        const data = await resp.json();
-        window.location.reload();
+        await fetch('/api/portfolio/sync', { method: 'POST' });
+        pollTimer = setInterval(pollStatus, 2000);
+        pollStatus();
     } catch (err) {
-        alert('Sync failed: ' + err.message);
-    } finally {
+        document.getElementById('sync-status-msg').textContent = 'Failed to start: ' + err.message;
         btn.disabled = false;
         btn.innerHTML = '<i class="fas fa-sync"></i> Sync from Binance';
     }

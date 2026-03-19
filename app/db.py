@@ -31,6 +31,7 @@ TRADES_TABLE_SCHEMA = """
         price REAL NOT NULL,
         qty REAL NOT NULL,
         quote_qty REAL NOT NULL,
+        quote_qty_usd REAL NOT NULL DEFAULT 0,
         commission REAL NOT NULL,
         commission_asset TEXT NOT NULL,
         trade_time TIMESTAMP NOT NULL,
@@ -87,6 +88,16 @@ CHATS_TABLE_SCHEMA = """
     )
 """
 
+COST_BASIS_OVERRIDES_TABLE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS cost_basis_overrides (
+        asset TEXT PRIMARY KEY,
+        avg_price_usd REAL NOT NULL,
+        notes TEXT,
+        source TEXT DEFAULT 'manual',
+        created_at TIMESTAMP NOT NULL
+    )
+"""
+
 ALL_SCHEMAS = [
     TRADES_TABLE_SCHEMA,
     BALANCES_TABLE_SCHEMA,
@@ -94,6 +105,7 @@ ALL_SCHEMAS = [
     ASSET_GROUPS_TABLE_SCHEMA,
     SYNC_LOG_TABLE_SCHEMA,
     CHATS_TABLE_SCHEMA,
+    COST_BASIS_OVERRIDES_TABLE_SCHEMA,
 ]
 
 
@@ -115,6 +127,10 @@ def init_db():
     with managed_db_session() as db:
         for schema in ALL_SCHEMAS:
             db.execute(schema)
+        # Migrate: add quote_qty_usd if it doesn't exist
+        cols = [row[1] for row in db.execute("PRAGMA table_info(trades)").fetchall()]
+        if "quote_qty_usd" not in cols:
+            db.execute("ALTER TABLE trades ADD COLUMN quote_qty_usd REAL NOT NULL DEFAULT 0")
         db.commit()
 
 

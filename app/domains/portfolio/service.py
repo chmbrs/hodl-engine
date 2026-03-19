@@ -16,7 +16,8 @@ from domains.portfolio.value_objects import AccountType, SyncStatus, TradeSide
 
 logger = logging.getLogger(__name__)
 
-QUOTE_ASSETS = ["USDT", "BUSD", "USDC", "USD"]
+QUOTE_ASSETS = ["USDT", "BUSD", "USDC", "USD", "BRL", "BNB", "ETH", "BTC"]
+STABLECOINS = {"USDT", "BUSD", "USDC", "USD", "DAI", "TUSD", "FDUSD", "RLUSD", "USD1", "USDP", "USDD"}
 
 
 def _get_binance_client() -> BinanceClient:
@@ -117,6 +118,16 @@ async def sync_prices() -> int:
     return count
 
 
+def _to_usd(quote_qty: float, quote_asset: str, timestamp_ms: int, client, price_cache: dict) -> float:
+    """Convert a quote amount to USD, using cache to avoid repeated API calls."""
+    if quote_asset in STABLECOINS:
+        return quote_qty
+    day_key = (quote_asset, timestamp_ms // 86_400_000)
+    if day_key not in price_cache:
+        price_cache[day_key] = client.get_historical_usd_price(quote_asset, timestamp_ms)
+    return quote_qty * price_cache[day_key]
+
+
 async def sync_trades() -> int:
     client = _get_binance_client()
     now = datetime.now(timezone.utc)
@@ -128,10 +139,28 @@ async def sync_trades() -> int:
 
     assets = [row["asset"] for row in held_assets]
     total_synced = 0
+    price_cache: dict = {}
+
+    # Get all exchange symbols once (cached on client instance)
+    exchange_symbols = await asyncio.to_thread(client.get_symbols_for_asset, assets[0])
+    # Warm the cache
+    for asset in assets[1:]:
+        await asyncio.to_thread(client.get_symbols_for_asset, asset)
 
     for asset in assets:
+        # Discover all trading pairs for this asset
+        all_symbols = client.get_symbols_for_asset(asset)
+        # Also try standard pairs not in exchange info (e.g., very old pairs)
         for quote in QUOTE_ASSETS:
-            symbol = f"{asset}{quote}"
+            sym = f"{asset}{quote}"
+            if sym not in all_symbols:
+                all_symbols.append(sym)
+
+        for symbol in all_symbols:
+            _, quote_asset = _parse_symbol(symbol)
+            if not quote_asset:
+                continue
+
             try:
                 with managed_db_session() as db:
                     last_trade = db.execute(
@@ -151,21 +180,24 @@ async def sync_trades() -> int:
                 if spot_trades:
                     with managed_db_session() as db:
                         for t in spot_trades:
-                            base, quote_asset = _parse_symbol(t.symbol)
+                            base, q_asset = _parse_symbol(t.symbol)
                             trade_id = f"spot_{t.id}_{t.symbol}"
+                            ts_ms = t.time
+                            q_qty = float(t.quoteQty)
+                            q_qty_usd = _to_usd(q_qty, q_asset, ts_ms, client, price_cache)
                             db.execute(
                                 """INSERT OR IGNORE INTO trades
                                    (id, symbol, base_asset, quote_asset, account_type, side,
-                                    price, qty, quote_qty, commission, commission_asset,
+                                    price, qty, quote_qty, quote_qty_usd, commission, commission_asset,
                                     trade_time, synced_at)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                 (
-                                    trade_id, t.symbol, base, quote_asset,
+                                    trade_id, t.symbol, base, q_asset,
                                     AccountType.SPOT.value,
                                     TradeSide.BUY.value if t.isBuyer else TradeSide.SELL.value,
-                                    float(t.price), float(t.qty), float(t.quoteQty),
+                                    float(t.price), float(t.qty), q_qty, q_qty_usd,
                                     float(t.commission), t.commissionAsset,
-                                    datetime.fromtimestamp(t.time / 1000, tz=timezone.utc),
+                                    datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc),
                                     now,
                                 ),
                             )
@@ -179,28 +211,126 @@ async def sync_trades() -> int:
     return total_synced
 
 
+async def sync_convert_history() -> int:
+    """Sync Binance Convert trades as buy/sell records."""
+    client = _get_binance_client()
+    now = datetime.now(timezone.utc)
+    price_cache: dict = {}
+
+    # Start from last synced convert trade, else 2 years back
+    with managed_db_session() as db:
+        last = db.execute(
+            "SELECT MAX(trade_time) as t FROM trades WHERE id LIKE 'convert_%'"
+        ).fetchone()
+    if last and last["t"]:
+        last_dt = datetime.fromisoformat(last["t"]) if isinstance(last["t"], str) else last["t"]
+        start_ms = int(last_dt.timestamp() * 1000) + 1
+    else:
+        start_ms = int((now.timestamp() - 2 * 365 * 24 * 3600) * 1000)  # 2 years back
+
+    end_ms = int(now.timestamp() * 1000)
+
+    records = await asyncio.to_thread(client.get_convert_history, start_ms, end_ms)
+    total_synced = 0
+
+    with managed_db_session() as db:
+        for r in records:
+            if r.get("orderStatus") != "SUCCESS":
+                continue
+
+            from_asset = r["fromAsset"]
+            to_asset = r["toAsset"]
+            from_amount = float(r["fromAmount"])
+            to_amount = float(r["toAmount"])
+            ts_ms = int(r["createTime"])
+            trade_time = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            order_id = str(r["orderId"])
+
+            # BUY side: acquiring to_asset
+            if to_asset not in STABLECOINS:
+                q_qty_usd = _to_usd(from_amount, from_asset, ts_ms, client, price_cache)
+                buy_id = f"convert_buy_{order_id}"
+                db.execute(
+                    """INSERT OR IGNORE INTO trades
+                       (id, symbol, base_asset, quote_asset, account_type, side,
+                        price, qty, quote_qty, quote_qty_usd, commission, commission_asset,
+                        trade_time, synced_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        buy_id, f"{to_asset}/{from_asset}", to_asset, from_asset,
+                        AccountType.SPOT.value, TradeSide.BUY.value,
+                        from_amount / to_amount if to_amount else 0,
+                        to_amount, from_amount, q_qty_usd,
+                        0.0, "",
+                        trade_time, now,
+                    ),
+                )
+                total_synced += 1
+
+            # SELL side: disposing from_asset
+            if from_asset not in STABLECOINS:
+                q_qty_usd = _to_usd(to_amount, to_asset, ts_ms, client, price_cache)
+                sell_id = f"convert_sell_{order_id}"
+                db.execute(
+                    """INSERT OR IGNORE INTO trades
+                       (id, symbol, base_asset, quote_asset, account_type, side,
+                        price, qty, quote_qty, quote_qty_usd, commission, commission_asset,
+                        trade_time, synced_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        sell_id, f"{from_asset}/{to_asset}", from_asset, to_asset,
+                        AccountType.SPOT.value, TradeSide.SELL.value,
+                        to_amount / from_amount if from_amount else 0,
+                        from_amount, to_amount, q_qty_usd,
+                        0.0, "",
+                        trade_time, now,
+                    ),
+                )
+                total_synced += 1
+
+        db.commit()
+
+    return total_synced
+
+
+def _sync_log_step(sync_id: int, step: str, partial: dict) -> None:
+    with managed_db_session() as db:
+        db.execute(
+            "UPDATE sync_log SET details = ? WHERE id = ?",
+            (json.dumps({"step": step, **partial}), sync_id),
+        )
+        db.commit()
+
+
 async def sync_all() -> dict:
     now = datetime.now(timezone.utc)
 
     with managed_db_session() as db:
         db.execute(
-            "INSERT INTO sync_log (sync_type, started_at, status) VALUES (?, ?, ?)",
-            ("full", now, SyncStatus.RUNNING.value),
+            "INSERT INTO sync_log (sync_type, started_at, status, details) VALUES (?, ?, ?, ?)",
+            ("full", now, SyncStatus.RUNNING.value, json.dumps({"step": "balances"})),
         )
         db.commit()
         sync_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
+    partial: dict = {}
     try:
         balance_counts = await sync_balances()
-        price_count = await sync_prices()
-        trade_count = await sync_trades()
+        partial["balances"] = balance_counts
+        _sync_log_step(sync_id, "prices", partial)
 
-        result = {
-            "status": "completed",
-            "balances": balance_counts,
-            "prices_synced": price_count,
-            "trades_synced": trade_count,
-        }
+        price_count = await sync_prices()
+        partial["prices_synced"] = price_count
+        _sync_log_step(sync_id, "trades", partial)
+
+        trade_count = await sync_trades()
+        partial["trades_synced"] = trade_count
+        _sync_log_step(sync_id, "converts", partial)
+
+        convert_count = await sync_convert_history()
+        partial["converts_synced"] = convert_count
+
+        result = {"status": "completed", **partial}
 
         with managed_db_session() as db:
             db.execute(
@@ -215,11 +345,34 @@ async def sync_all() -> dict:
         with managed_db_session() as db:
             db.execute(
                 "UPDATE sync_log SET completed_at = ?, status = ?, details = ? WHERE id = ?",
-                (datetime.now(timezone.utc), SyncStatus.FAILED.value, str(e), sync_id),
+                (datetime.now(timezone.utc), SyncStatus.FAILED.value,
+                 json.dumps({"step": partial.get("step", "unknown"), "error": str(e), **partial}), sync_id),
             )
             db.commit()
 
         return {"status": "failed", "error": str(e)}
+
+
+def get_sync_status() -> dict:
+    with managed_db_session() as db:
+        row = db.execute(
+            """SELECT id, sync_type, started_at, completed_at, status, details
+               FROM sync_log ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+
+    if not row:
+        return {"status": "never"}
+
+    details = json.loads(row["details"]) if row["details"] else {}
+
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "step": details.get("step"),
+        "started_at": row["started_at"],
+        "completed_at": row["completed_at"],
+        "details": details,
+    }
 
 
 def _get_asset_groups() -> dict[str, list[str]]:
@@ -230,9 +383,11 @@ def _get_asset_groups() -> dict[str, list[str]]:
 
 
 def _get_current_price(asset: str) -> float:
+    lookup = asset[2:] if asset.startswith("LD") and len(asset) > 2 else asset
+
     with managed_db_session() as db:
         for quote in QUOTE_ASSETS:
-            symbol = f"{asset}{quote}"
+            symbol = f"{lookup}{quote}"
             row = db.execute(
                 "SELECT price FROM prices WHERE symbol = ?", (symbol,)
             ).fetchone()
@@ -242,26 +397,75 @@ def _get_current_price(asset: str) -> float:
     return 0.0
 
 
-def _calculate_cost_basis(group_members: list[str]) -> tuple[float, float]:
-    total_cost = 0.0
+def _calculate_cost_basis(group_name: str, group_members: list[str], current_qty: float) -> tuple[float, float, bool]:
+    """Returns (avg_entry_price, total_cost, is_overridden)."""
+    with managed_db_session() as db:
+        override = db.execute(
+            "SELECT avg_price_usd FROM cost_basis_overrides WHERE asset = ?",
+            (group_name,),
+        ).fetchone()
+
+    if override:
+        avg_entry = override["avg_price_usd"]
+        return avg_entry, round(current_qty * avg_entry, 2), True
+
+    total_cost_usd = 0.0
     total_qty_bought = 0.0
 
     with managed_db_session() as db:
         for member in group_members:
             rows = db.execute(
-                "SELECT price, qty, quote_qty FROM trades WHERE base_asset = ? AND side = ?",
+                "SELECT qty, quote_qty_usd FROM trades WHERE base_asset = ? AND side = ?",
                 (member, TradeSide.BUY.value),
             ).fetchall()
             for row in rows:
-                total_cost += row["quote_qty"]
+                total_cost_usd += row["quote_qty_usd"]
                 total_qty_bought += row["qty"]
 
     if total_qty_bought == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, False
 
-    avg_entry = total_cost / total_qty_bought
+    avg_entry = total_cost_usd / total_qty_bought
+    current_cost = current_qty * avg_entry
 
-    return avg_entry, total_cost
+    return avg_entry, current_cost, False
+
+
+def get_cost_basis_override(asset: str) -> dict | None:
+    with managed_db_session() as db:
+        row = db.execute(
+            "SELECT asset, avg_price_usd, notes, source, created_at FROM cost_basis_overrides WHERE asset = ?",
+            (asset,),
+        ).fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "asset": row["asset"],
+        "avg_price_usd": row["avg_price_usd"],
+        "notes": row["notes"],
+        "source": row["source"],
+        "created_at": row["created_at"],
+    }
+
+
+def set_cost_basis_override(asset: str, avg_price_usd: float, notes: str = "") -> None:
+    now = datetime.now(timezone.utc)
+    with managed_db_session() as db:
+        db.execute(
+            """INSERT INTO cost_basis_overrides (asset, avg_price_usd, notes, source, created_at)
+               VALUES (?, ?, ?, 'manual', ?)
+               ON CONFLICT(asset) DO UPDATE SET avg_price_usd=?, notes=?, created_at=?""",
+            (asset, avg_price_usd, notes, now, avg_price_usd, notes, now),
+        )
+        db.commit()
+
+
+def delete_cost_basis_override(asset: str) -> None:
+    with managed_db_session() as db:
+        db.execute("DELETE FROM cost_basis_overrides WHERE asset = ?", (asset,))
+        db.commit()
 
 
 def _get_group_balances(group_members: list[str]) -> list[AssetBalance]:
@@ -301,7 +505,17 @@ async def get_portfolio_dashboard() -> PortfolioDashboard:
         grouped_assets.update(members)
 
     for asset in all_asset_names:
-        if asset not in grouped_assets:
+        if asset in grouped_assets:
+            continue
+        base = asset[2:] if asset.startswith("LD") and len(asset) > 2 else asset
+        if base != asset and base in asset_groups:
+            asset_groups[base].append(asset)
+            grouped_assets.add(asset)
+        elif base != asset and base in all_asset_names:
+            asset_groups.setdefault(base, [base])
+            asset_groups[base].append(asset)
+            grouped_assets.update([asset, base])
+        else:
             asset_groups[asset] = [asset]
 
     holdings = []
@@ -312,7 +526,7 @@ async def get_portfolio_dashboard() -> PortfolioDashboard:
         if total_qty == 0:
             continue
 
-        avg_entry, total_cost = _calculate_cost_basis(members)
+        avg_entry, total_cost, is_overridden = _calculate_cost_basis(group_name, members, total_qty)
 
         primary_asset = members[0]
         current_price = _get_current_price(primary_asset)
@@ -333,6 +547,7 @@ async def get_portfolio_dashboard() -> PortfolioDashboard:
                 unrealized_pnl=round(unrealized_pnl, 2),
                 unrealized_pnl_pct=round(unrealized_pnl_pct, 2),
                 balances=balances,
+                cost_basis_overridden=is_overridden,
             )
         )
 
@@ -371,7 +586,7 @@ async def get_asset_detail(group_name: str) -> dict:
 
     balances = _get_group_balances(members)
     total_qty = sum(b.total for b in balances)
-    avg_entry, total_cost = _calculate_cost_basis(members)
+    avg_entry, total_cost, is_overridden = _calculate_cost_basis(group_name, members, total_qty)
 
     primary_asset = members[0]
     current_price = _get_current_price(primary_asset)
@@ -390,6 +605,7 @@ async def get_asset_detail(group_name: str) -> dict:
         unrealized_pnl=round(unrealized_pnl, 2),
         unrealized_pnl_pct=round(unrealized_pnl_pct, 2),
         balances=balances,
+        cost_basis_overridden=is_overridden,
     )
 
     trades = []

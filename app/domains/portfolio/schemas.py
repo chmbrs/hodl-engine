@@ -39,6 +39,7 @@ class AssetHolding(BaseModel):
     unrealized_pnl: float
     unrealized_pnl_pct: float
     balances: list[AssetBalance]
+    cost_basis_overridden: bool = False
 
 
 class PortfolioDashboard(BaseModel):
