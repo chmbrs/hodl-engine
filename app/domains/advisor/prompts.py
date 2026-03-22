@@ -105,3 +105,53 @@ COIN_SUGGESTIONS_PROMPT = """Based on the current portfolio composition, suggest
 5. Suggest allocation percentages
 
 Focus on quality over quantity. Only suggest assets available on Binance."""
+
+
+ALLOCATION_TARGETS_PROMPT = """Based on the portfolio data and the market context provided (if any), suggest optimal allocation targets for each currently held asset.
+
+Rules:
+- Allocations must sum to exactly 100%
+- Only include assets already in the portfolio
+- Consider risk, correlation, market conditions, and portfolio balance
+- Be opinionated — give a clear recommendation, not a range
+
+At the end of your analysis, output a JSON block in exactly this format (no extra keys, percentages as decimals summing to 1.0):
+
+```json
+{{
+  "ASSET1": 0.30,
+  "ASSET2": 0.25,
+  ...
+}}
+```
+
+Explain your reasoning before the JSON block."""
+
+
+HODL_ENGINE_CONTEXT_PROMPT = """I need a structured market intelligence summary to feed into my crypto portfolio rebalancing tool (Hodl Engine).
+
+Based on everything you know about my financial profile, current market conditions, and macro environment, generate a concise summary in the following format:
+
+---
+## Market Intelligence Brief for Hodl Engine
+
+### Macro Environment
+[2-3 sentences: interest rates, USD strength, risk-on/off sentiment, inflation outlook]
+
+### Crypto Market Conditions
+[2-3 sentences: BTC dominance, overall trend (bull/bear/sideways), key levels to watch]
+
+### Sector Analysis
+[For each relevant sector I hold — L1s, DeFi, AI, RWA, memecoins, etc. — one sentence on outlook]
+
+### Key Asset Signals
+[For any specific assets I hold where you have a strong view, one bullet per asset]
+
+### Risk Factors
+[2-3 bullets: macro or crypto-specific risks to watch in the next 30-60 days]
+
+### Suggested Bias
+[One sentence: overall portfolio bias recommendation — e.g. "Reduce altcoin exposure, concentrate in BTC/ETH" or "Rotate into mid-caps, macro is favorable"]
+---
+
+Keep the entire summary under 400 words. I will paste this directly into Hodl Engine's allocation advisor."""

@@ -18,6 +18,24 @@
         <button class="btn btn-secondary" onclick="runAnalysis('coin-suggestions')">
             <i class="fas fa-coins"></i> Find New Coins
         </button>
+        <button class="btn btn-secondary" onclick="toggleAllocationPanel()">
+            <i class="fas fa-sliders"></i> Suggest Allocations
+        </button>
+        <div id="allocation-panel" class="hidden">
+            <textarea id="market-context-input"
+                placeholder="Paste your Market Intelligence Brief from Claude.ai here (optional)..."
+                rows="6"></textarea>
+            <button class="btn btn-primary" style="width:100%;margin-top:0.5rem" onclick="runAllocationSuggestion()">
+                <i class="fas fa-wand-magic-sparkles"></i> Get Targets
+            </button>
+        </div>
+        <hr style="border-color:var(--border-color);margin:1rem 0">
+        <button class="btn btn-secondary" onclick="toggleHistory()">
+            <i class="fas fa-clock-rotate-left"></i> Saved Analyses
+        </button>
+        <div id="history-panel" class="hidden" style="margin-top:0.75rem">
+            <div id="history-list"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+        </div>
     </div>
 
     <div class="chat-container">
@@ -119,7 +137,130 @@ async function runAnalysis(type) {
     try {
         const resp = await fetch(endpoint, { method: 'POST' });
         const data = await resp.json();
-        assistantDiv.querySelector('p').textContent = data.analysis || data.message || JSON.stringify(data);
+        const text = data.analysis || data.message || JSON.stringify(data);
+        assistantDiv.querySelector('p').textContent = text;
+        _appendSaveButton(assistantDiv, label, text);
+    } catch (err) {
+        assistantDiv.querySelector('p').textContent = 'Error: ' + err.message;
+    }
+}
+
+function _appendSaveButton(container, label, content) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-secondary';
+    btn.style.marginTop = '0.5rem';
+    btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save';
+    btn.onclick = async () => {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+        const res = await fetch('/api/advisor/snapshots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label, content }),
+        });
+        if (res.ok) {
+            btn.innerHTML = '<i class="fas fa-check"></i> Saved';
+        } else {
+            btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save';
+            btn.disabled = false;
+        }
+    };
+    container.appendChild(btn);
+}
+
+async function toggleHistory() {
+    const panel = document.getElementById('history-panel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+        await loadHistory();
+    }
+}
+
+async function loadHistory() {
+    const listEl = document.getElementById('history-list');
+    listEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+    const resp = await fetch('/api/advisor/snapshots');
+    const snapshots = await resp.json();
+    if (!snapshots.length) {
+        listEl.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">No saved analyses yet.</p>';
+        return;
+    }
+    listEl.innerHTML = '';
+    for (const s of snapshots) {
+        const date = new Date(s.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const item = document.createElement('div');
+        item.style.cssText = 'border:1px solid var(--border-color);border-radius:8px;padding:0.5rem 0.75rem;margin-bottom:0.5rem;cursor:pointer';
+        item.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:0.85rem;font-weight:600">${s.label}</span>
+            <span style="font-size:0.75rem;color:var(--text-muted)">${date}</span>
+        </div>`;
+        item.onclick = () => {
+            appendMessage('user', `Load: ${s.label}`);
+            const div = appendMessage('assistant', s.content);
+            _appendSaveButton(div, s.label, s.content);
+        };
+        listEl.appendChild(item);
+    }
+}
+
+function toggleAllocationPanel() {
+    document.getElementById('allocation-panel').classList.toggle('hidden');
+}
+
+function _parseAllocationJson(text) {
+    const match = text.match(/```json\s*([\s\S]*?)```/);
+    if (!match) return null;
+    try {
+        const parsed = JSON.parse(match[1]);
+        const total = Object.values(parsed).reduce((a, b) => a + b, 0);
+        if (Math.abs(total - 1.0) > 0.02) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+async function runAllocationSuggestion() {
+    const marketContext = document.getElementById('market-context-input').value.trim();
+    const label = marketContext ? 'Suggest Allocation Targets (with market context)' : 'Suggest Allocation Targets';
+    appendMessage('user', label);
+
+    const assistantDiv = appendMessage('assistant', '<i class="fas fa-spinner fa-spin"></i> Analyzing...');
+
+    try {
+        const resp = await fetch('/api/advisor/allocation-suggestion', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ market_context: marketContext }),
+        });
+        const data = await resp.json();
+        const text = data.analysis || '';
+        assistantDiv.querySelector('p').textContent = text;
+
+        const targets = _parseAllocationJson(text);
+        if (targets) {
+            const applyBtn = document.createElement('button');
+            applyBtn.className = 'btn btn-primary';
+            applyBtn.style.marginTop = '0.75rem';
+            applyBtn.innerHTML = '<i class="fas fa-check"></i> Apply These Targets';
+            applyBtn.onclick = async () => {
+                applyBtn.disabled = true;
+                applyBtn.textContent = 'Applying...';
+                const res = await fetch('/api/rebalance/targets', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ targets }),
+                });
+                if (res.ok) {
+                    window.location.href = '/rebalance';
+                } else {
+                    const err = await res.json();
+                    applyBtn.textContent = 'Failed: ' + (err.detail || 'unknown error');
+                    applyBtn.disabled = false;
+                }
+            };
+            assistantDiv.appendChild(applyBtn);
+        }
     } catch (err) {
         assistantDiv.querySelector('p').textContent = 'Error: ' + err.message;
     }

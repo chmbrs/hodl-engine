@@ -7,13 +7,86 @@
 </div>
 
 {% if dashboard.suggestions %}
+<div class="charts-row">
+    <div class="chart-wrapper">
+        <h3>Current Allocation</h3>
+        <canvas id="currentChart"></canvas>
+    </div>
+    <div class="chart-wrapper">
+        <h3>Target Allocation</h3>
+        <canvas id="targetChart"></canvas>
+    </div>
+</div>
+
+<div class="import-targets">
+    <div class="import-targets-header" onclick="toggleImportPanel()">
+        <span><i class="fas fa-file-import"></i> Import Targets from JSON</span>
+        <i class="fas fa-chevron-down" id="importChevron"></i>
+    </div>
+    <div id="importPanel" class="hidden">
+        <div class="import-prompt-box">
+            <div class="import-prompt-label">
+                <span>Prompt to use in Claude.ai (click to copy)</span>
+                <button class="btn btn-secondary btn-xs" onclick="copyPrompt()"><i class="fas fa-copy"></i> Copy</button>
+            </div>
+            {% set prices = {} %}{% for v in dashboard.asset_views %}{% set _ = prices.update({v.holding.group_name: v.holding.current_price}) %}{% endfor %}<pre id="importPromptText">I need allocation targets for my crypto portfolio as JSON.
+My current holdings and allocations are:
+{% for s in dashboard.suggestions %}- {{ s.group_name }}: {{ s.current_allocation_pct }}% (target now: {{ s.target_allocation_pct }}%, price: ${{ "%.2f"|format(prices.get(s.group_name, 0)) }})
+{% endfor %}
+
+Return ONLY a JSON object where keys are asset names and values are decimal allocations summing to 1.0.
+Consider my portfolio profile and current market conditions.
+
+Example format:
+{
+  "BTC": 0.30,
+  "ETH": 0.25,
+  "BNB": 0.10,
+  ...
+}</pre>
+        </div>
+        <label class="import-label">Paste JSON targets here:</label>
+        <textarea id="jsonImportInput" placeholder='{ "BTC": 0.40, "ETH": 0.30, "BNB": 0.15, "XRP": 0.15 }'></textarea>
+        <div id="importError" class="import-error hidden"></div>
+        <div class="target-actions">
+            <button class="btn btn-primary" onclick="applyJsonTargets()"><i class="fas fa-check"></i> Apply</button>
+            <button class="btn btn-secondary" onclick="toggleImportPanel()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div class="target-editor">
+    <h3>Define Target Allocation</h3>
+    {% for s in dashboard.suggestions %}
+    <div class="target-row">
+        <label>{{ s.group_name }}</label>
+        <input type="number" step="0.01" min="0" max="100"
+               data-asset="{{ s.group_name }}"
+               class="target-input"
+               value="{{ "%.2f"|format(dashboard.allocation_targets.get(s.group_name, 0) * 100) }}">
+    </div>
+    {% endfor %}
+    <div class="target-total" id="totalRow">
+        <span>Total</span>
+        <span id="totalValue">0.00%</span>
+    </div>
+    <div class="target-actions">
+        <button class="btn btn-primary" id="saveTargets" disabled>Save Targets</button>
+        <button class="btn btn-secondary" id="resetTargets">Reset to Equal Weight</button>
+    </div>
+</div>
+
 <h2>Allocation Suggestions</h2>
+{% set view_map = {} %}
+{% for v in dashboard.asset_views %}{% set _ = view_map.update({v.holding.group_name: v}) %}{% endfor %}
 <table class="holdings-table">
     <thead>
         <tr>
             <th>Asset</th>
             <th>Current %</th>
             <th>Target %</th>
+            <th>Price</th>
+            <th>Target Price</th>
             <th>Action</th>
             <th>Qty</th>
             <th>Value (USDT)</th>
@@ -21,16 +94,37 @@
     </thead>
     <tbody>
         {% for s in dashboard.suggestions %}
+        {% set cp = view_map[s.group_name].holding.current_price if view_map.get(s.group_name) else 0 %}
         <tr>
             <td><strong>{{ s.group_name }}</strong></td>
             <td>{{ s.current_allocation_pct }}%</td>
             <td>{{ s.target_allocation_pct }}%</td>
+            <td>{% if cp < 1 %}${{ "%.4f"|format(cp) }}{% else %}${{ "%.2f"|format(cp) }}{% endif %}</td>
+            <td>{% if s.target_price == 0 %}—{% elif s.target_price < 1 %}${{ "%.4f"|format(s.target_price) }}{% else %}${{ "%.2f"|format(s.target_price) }}{% endif %}</td>
             <td class="{% if s.action == 'BUY' %}positive{% elif s.action == 'SELL' %}negative{% endif %}">
                 {{ s.action }}
             </td>
             <td>{{ s.suggested_qty }}</td>
             <td>${{ "%.2f"|format(s.suggested_value_usdt) }}</td>
         </tr>
+        {% if s.action == 'SELL' and view_map.get(s.group_name) and view_map[s.group_name].sell_targets %}
+        <tr class="sell-targets-row">
+            <td colspan="8">
+                <div class="sell-targets">
+                    <span class="sell-targets-label"><i class="fas fa-crosshairs"></i> Sell targets for rebalancing:</span>
+                    <div class="sell-targets-levels">
+                        {% for t in view_map[s.group_name].sell_targets %}
+                        <div class="sell-target-item {% if t.is_reached %}reached{% endif %}">
+                            <span class="sell-target-label">{{ t.label }}</span>
+                            <span class="sell-target-price">{% if t.price < 1 %}${{ "%.4f"|format(t.price) }}{% else %}${{ "%.2f"|format(t.price) }}{% endif %}</span>
+                            {% if t.is_reached %}<span class="sell-target-badge"><i class="fas fa-check-circle"></i> Now</span>{% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </td>
+        </tr>
+        {% endif %}
         {% endfor %}
     </tbody>
 </table>
@@ -71,5 +165,156 @@
 <div class="empty-state">
     <p>No holdings data available. <a href="/portfolio">Sync your portfolio</a> first.</p>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if dashboard.suggestions %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+    const COLORS = ['#f0b90b', '#0ecb81', '#f6465d', '#1e88e5', '#ab47bc', '#ff7043', '#26a69a', '#78909c', '#d4e157', '#ec407a'];
+
+    Chart.defaults.color = '#eaecef';
+
+    const labels = [{% for s in dashboard.suggestions %}'{{ s.group_name }}'{% if not loop.last %}, {% endif %}{% endfor %}];
+    const currentData = [{% for s in dashboard.suggestions %}{{ s.current_allocation_pct }}{% if not loop.last %}, {% endif %}{% endfor %}];
+    const targetData = [{% for s in dashboard.suggestions %}{{ "%.2f"|format(dashboard.allocation_targets.get(s.group_name, 0) * 100) }}{% if not loop.last %}, {% endif %}{% endfor %}];
+    const colors = labels.map((_, i) => COLORS[i % COLORS.length]);
+
+    const chartOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '55%',
+        plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + ctx.parsed.toFixed(2) + '%' } }
+        }
+    };
+
+    new Chart(document.getElementById('currentChart'), {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: currentData, backgroundColor: colors, borderWidth: 0 }] },
+        options: chartOpts
+    });
+
+    new Chart(document.getElementById('targetChart'), {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: targetData, backgroundColor: colors, borderWidth: 0 }] },
+        options: chartOpts
+    });
+
+    const inputs = document.querySelectorAll('.target-input');
+    const totalEl = document.getElementById('totalValue');
+    const totalRow = document.getElementById('totalRow');
+    const saveBtn = document.getElementById('saveTargets');
+    const resetBtn = document.getElementById('resetTargets');
+
+    function updateTotal() {
+        let sum = 0;
+        inputs.forEach(inp => { sum += parseFloat(inp.value) || 0; });
+        totalEl.textContent = sum.toFixed(2) + '%';
+        const valid = Math.abs(sum - 100) < 0.1;
+        totalRow.classList.toggle('invalid', !valid);
+        saveBtn.disabled = !valid;
+    }
+
+    inputs.forEach(inp => inp.addEventListener('input', updateTotal));
+    updateTotal();
+
+    saveBtn.addEventListener('click', async () => {
+        const targets = {};
+        inputs.forEach(inp => {
+            targets[inp.dataset.asset] = parseFloat(inp.value) / 100;
+        });
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+        const res = await fetch('/api/rebalance/targets', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targets })
+        });
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            const err = await res.json();
+            alert(err.detail || 'Failed to save targets');
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Targets';
+        }
+    });
+
+    resetBtn.addEventListener('click', async () => {
+        resetBtn.disabled = true;
+        resetBtn.textContent = 'Resetting...';
+        const res = await fetch('/api/rebalance/targets', { method: 'DELETE' });
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            alert('Failed to reset targets');
+            resetBtn.disabled = false;
+            resetBtn.textContent = 'Reset to Equal Weight';
+        }
+    });
+})();
+
+function toggleImportPanel() {
+    const panel = document.getElementById('importPanel');
+    const chevron = document.getElementById('importChevron');
+    panel.classList.toggle('hidden');
+    chevron.style.transform = panel.classList.contains('hidden') ? '' : 'rotate(180deg)';
+}
+
+function copyPrompt() {
+    const text = document.getElementById('importPromptText').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = event.target.closest('button');
+        btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+        setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy"></i> Copy'; }, 1500);
+    });
+}
+
+async function applyJsonTargets() {
+    const raw = document.getElementById('jsonImportInput').value.trim();
+    const errorEl = document.getElementById('importError');
+    errorEl.classList.add('hidden');
+
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        errorEl.textContent = 'Invalid JSON. Check format and try again.';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+        errorEl.textContent = 'Expected a JSON object like { "BTC": 0.30, ... }';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    const total = Object.values(parsed).reduce((a, b) => a + b, 0);
+    if (Math.abs(total - 1.0) > 0.02) {
+        errorEl.textContent = `Values must sum to 1.0 (100%). Current sum: ${total.toFixed(4)}`;
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    const res = await fetch('/api/rebalance/targets', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: parsed })
+    });
+
+    if (res.ok) {
+        window.location.reload();
+    } else {
+        const err = await res.json();
+        errorEl.textContent = err.detail || 'Failed to apply targets.';
+        errorEl.classList.remove('hidden');
+    }
+}
+</script>
 {% endif %}
 {% endblock %}

@@ -1,7 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from domains.advisor.schemas import AnalysisResponse, ChatMessage
+from domains.advisor.schemas import (
+    AllocationSuggestionRequest,
+    AnalysisResponse,
+    AnalysisSnapshot,
+    ChatMessage,
+    SaveAnalysisRequest,
+)
 
 router = APIRouter()
 
@@ -50,6 +56,40 @@ async def asset_insights_endpoint(group_name: str) -> AnalysisResponse:
     )
 
     return AnalysisResponse(analysis=analysis)
+
+
+@router.post("/allocation-suggestion")
+async def allocation_suggestion_endpoint(body: AllocationSuggestionRequest) -> AnalysisResponse:
+    from domains.advisor import service
+    from domains.portfolio import service as portfolio_service
+
+    dashboard = await portfolio_service.get_portfolio_dashboard()
+    analysis = await service.get_allocation_suggestion(dashboard, body.market_context)
+
+    return AnalysisResponse(analysis=analysis)
+
+
+@router.get("/snapshots")
+async def list_snapshots_endpoint() -> list[AnalysisSnapshot]:
+    from domains.advisor import service
+
+    return await service.get_analysis_history()
+
+
+@router.post("/snapshots")
+async def save_snapshot_endpoint(body: SaveAnalysisRequest) -> AnalysisSnapshot:
+    from domains.advisor import service
+
+    return await service.save_analysis(body.label, body.content)
+
+
+@router.delete("/snapshots/{snapshot_id}")
+async def delete_snapshot_endpoint(snapshot_id: int) -> dict:
+    from domains.advisor import service
+
+    await service.delete_analysis(snapshot_id)
+
+    return {"ok": True}
 
 
 @router.post("/chat")
